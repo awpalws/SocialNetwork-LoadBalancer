@@ -13,61 +13,12 @@ def parse_args():
     parser.add_argument('-cn', '--client-number', type=int, required=True, help='Client Cluster Size')
     return parser.parse_args()
 
-install_docker = '''sudo apt-get update && \
-sudo DEBIAN_FRONTEND=noninteractive apt-get -y install \
-ca-certificates curl gnupg lsb-release && \
-sudo install -m 0755 -d /etc/apt/keyrings && \
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
-echo \"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable\" | \
-sudo tee /etc/apt/sources.list.d/docker.list > /dev/null && \
-sudo apt-get update && \
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io'''
 install_collectl = 'sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y collectl'
 install_sysdig = 'sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y sysdig'
 clone_official_socialnetwork_repo = 'ssh-keygen -F github.com || ssh-keyscan github.com >> ~/.ssh/known_hosts && git clone https://github.com/delimitrou/DeathStarBench.git && cd DeathStarBench && git checkout b2b7af9 && cd ..'
 args = parse_args()
 
-with ThreadingGroup(*[f'node-{idx}' for idx in range(0, args.number)]) as swarm_grp, \
-     ThreadingGroup(*[f'node-{idx}' for idx in range(args.number, args.number + args.client_number)]) as client_grp:
-    swarm_grp.run(install_collectl)
-    print('** collectl installed **')
-    swarm_grp.run(clone_official_socialnetwork_repo)
-    print('** socialNetwork cloned **')
-    swarm_grp.run(install_docker)
-    print('** docker installed **')
-
-    def stop_swarm_cluster():
-        swarm_grp.run('sudo docker swarm leave')
-        subprocess.run(shlex.split('sudo docker swarm leave -f'))
-    # stop_swarm_cluster()
-    def clear_env():
-        swarm_grp.run('sudo apt-get -y purge docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker-ce-rootless-extras')
-        swarm_grp.run('for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do sudo apt-get remove $pkg; done')
-        swarm_grp.run('sudo rm -rf /var/lib/containerd')
-        swarm_grp.run('sudo rm -rf /var/lib/docker')
-        swarm_grp.run('sudo rm /etc/apt/keyrings/docker.gpg')
-    # clear_env()
-
-    ret = subprocess.run(['sudo', 'docker', 'swarm', 'init', '--advertise-addr', args.ip], capture_output=True)
-    print('** swarm manager initialized **')
-    swarm_join_cmd_ptn = r'(docker swarm join --token .*:\d+)'
-    swarm_join_cmd = re.search(swarm_join_cmd_ptn, ret.stdout.decode('utf-8'))
-    if swarm_join_cmd is None:
-        print('Don\'t find match pattern for docker swarm join:')
-        print(f'The ret of swarm init is {ret}')
-        exit(0)
-    else:
-        swarm_join_cmd = swarm_join_cmd.group()
-    with ThreadingGroup.from_connections(swarm_grp[1:]) as grp_worker:
-        grp_worker.run('sudo ' + swarm_join_cmd)
-        grp_worker.run('if [ ! -e "$HOME/.ssh/config" ]; then echo -e "Host *\n\tStrictHostKeyChecking no" >> $HOME/.ssh/config; fi')
-        grp_worker.put(Path.home()/'.ssh'/'id_rsa', '.ssh')
-    print('** swarm cluster ready **')
-
-    subprocess.run(shlex.split('sudo docker service create --name registry \
-                               --publish published=5000,target=5000 registry:2'))
-    print('** registry service created **')
-
+with ThreadingGroup(*[f'node-{idx}' for idx in range(args.number, args.number + args.client_number)]) as client_grp:
     client_grp[0].run(install_sysdig)
     client_grp.put(Path.home()/'.ssh/id_rsa', '.ssh')
     client_grp.run('if [ ! -e "$HOME/.ssh/config" ]; then echo -e "Host *\n\tStrictHostKeyChecking no" >> $HOME/.ssh/config; fi')
@@ -83,16 +34,6 @@ with ThreadingGroup(*[f'node-{idx}' for idx in range(0, args.number)]) as swarm_
         subprocess.run(shlex.split(f'unzip {file}.zip'))
     subprocess.run(shlex.split('mv DeathStarBench/socialNetwork/src DeathStarBench/socialNetwork/src.bk'))
     subprocess.run(shlex.split('mv src DeathStarBench/socialNetwork/'))
-    os.chdir(Path.home()/'DeathStarBench'/'socialNetwork')
-    subprocess.run(shlex.split('sudo docker build -t 127.0.0.1:5000/social-network-microservices:withLog_01 .'))
-    subprocess.run(shlex.split('sudo docker push 127.0.0.1:5000/social-network-microservices:withLog_01'))
-    os.chdir(Path.home()/'internal_triggers'/'cpu')
-    subprocess.run(shlex.split('sudo docker build -t 127.0.0.1:5000/cpu_intensive .'))
-    subprocess.run(shlex.split('sudo docker push 127.0.0.1:5000/cpu_intensive'))
-    os.chdir(Path.home()/'internal_triggers'/'io')
-    subprocess.run(shlex.split('sudo docker build -t 127.0.0.1:5000/io_intensive .'))
-    subprocess.run(shlex.split('sudo docker push 127.0.0.1:5000/io_intensive'))
-    print('** customized socialNetwork docker images built **')
 
     os.chdir(Path.home())
     subprocess.run('mv socialNetwork/* DeathStarBench/socialNetwork/', shell=True)
