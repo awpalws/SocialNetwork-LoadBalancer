@@ -1,12 +1,12 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: home-timeline-redis
   namespace: social-network
   labels:
     app: home-timeline-redis
 spec:
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels:
       app: home-timeline-redis
@@ -15,17 +15,41 @@ spec:
       labels:
         app: home-timeline-redis
     spec:
+      initContainers:
+      - name: init-redis
+        image: redis:4.0.9
+        command:
+        - bash
+        - "-c"
+        - |
+          set -ex
+          # Generate mysql server-id from pod ordinal index.
+          [[ `hostname` =~ -([0-9]+)$ ]] || exit 1
+          ordinal=${BASH_REMATCH[1]}
+          # Copy appropriate conf.d files from config-map to emptyDir.
+          if [[ $ordinal -eq 0 ]]; then
+            cp /mnt/config-map/master.conf /etc/redis.conf
+          else
+            cp /mnt/config-map/slave.conf /etc/redis.conf
+          fi
+        volumeMounts:
+        - name: redis-config-volume
+          mountPath: /mnt/config-map
+        - name: conf
+          mountPath: /etc
+          subPath: redis.conf
       containers:
         - name: redis
           image: redis
           command:
             - "redis-server"
-            - "/tmp/redis.conf"
+            - "/etc/redis.conf"
           ports:
             - containerPort: 6379
           volumeMounts:
-            - mountPath: /tmp
-              name: redis-config-volume
+            - mountPath: /etc/
+              subPath: redis.conf
+              name: conf
             - mountPath: /keys
               name: tls-volume
           resources:
@@ -38,7 +62,9 @@ spec:
             secretName: tls
         - name: redis-config-volume
           configMap:
-            name: redis-config
+            name: home-timeline-redis-config
+        - name: conf
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -54,3 +80,4 @@ spec:
       port: 6379
       targetPort: 6379
   type: ClusterIP
+  clusterIP: None
